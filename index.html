@@ -15,7 +15,7 @@
         <form onsubmit="event.preventDefault(); auth.remove(); app.classList.remove('hidden'); showCards();" class="space-y-3">
             <input type="email" placeholder="Email" required class="w-full p-2 border rounded">
             <input type="password" placeholder="Password" required class="w-full p-2 border rounded">
-            <button class="w-full bg-blue-600 text-white p-2 rounded font-bold">Log In</button>
+            <button class="w-full bg-blue-600 text-white p-2 rounded font-bold cursor-pointer">Log In</button>
         </form>
     </div>
 
@@ -30,7 +30,7 @@
                 <input type="number" id="amt" step="0.01" placeholder="Amount ($)" required class="w-full p-2 border rounded">
                 <input type="date" id="exp" required class="w-full p-2 border rounded">
             </div>
-            <button class="w-full bg-green-600 text-white p-2 rounded font-bold">Save Card</button>
+            <button class="w-full bg-green-600 text-white p-2 rounded font-bold cursor-pointer">Save Card</button>
         </form>
 
         <!-- RECEIPT SCANNER -->
@@ -39,9 +39,9 @@
             <select id="selector" class="w-full p-2 border rounded bg-gray-50"></select>
             <label class="block text-center bg-blue-600 text-white p-3 rounded font-bold cursor-pointer">
                 Take Photo & Deduct
-                <input type="file" accept="image/*" capture="environment" onchange="scan(this)" class="hidden">
+                <input type="file" id="receiptFile" accept="image/*" capture="environment" onchange="scan(this)" class="hidden">
             </label>
-            <div id="status" class="hidden text-center text-blue-600 font-bold animate-pulse">Scanning text...</div>
+            <div id="status" class="hidden text-center text-blue-600 font-bold animate-pulse">Reading receipt text... Please wait...</div>
         </div>
 
         <!-- LIST -->
@@ -77,24 +77,66 @@
         }
 
         async function scan(input) {
-            if (!input.files[0] || !selector.value) return alert("Select a card first!");
-            status.classList.remove('hidden');
-
-            try {
-                const res = await Tesseract.recognize(input.files[0], 'eng');
-                const match = res.data.text.match(/(?:total|due|amt)[\s:;$]*([\d.]+)/i) || res.data.text.match(/([\d.]+\.\d{2})/);
-                status.classList.add('hidden');
-
-                let cost = match ? parseFloat(match[1]) : parseFloat(prompt("Could not read total. Enter manually:", "0.00"));
-                if (cost > 0 && confirm(`Deduct $${cost.toFixed(2)}?`)) {
-                    cards[selector.value].amt = Math.max(0, cards[selector.value].amt - cost);
-                    showCards();
-                }
-            } catch (err) {
-                status.classList.add('hidden');
-                alert("Error reading file.");
+            if (!input.files || input.files.length === 0) return;
+            if (selector.value === "") {
+                alert("Please pick a card from the dropdown menu first!");
+                input.value = '';
+                return;
             }
-            input.value = '';
+
+            status.classList.remove('hidden');
+            const file = input.files[0];
+            const reader = new FileReader();
+
+            reader.onload = async function (e) {
+                try {
+                    // Extract text cleanly using the DataURL representation
+                    const res = await Tesseract.recognize(e.target.result, 'eng');
+                    const text = res.data.text;
+                    
+                    // Look through keywords for amounts
+                    const moneyRegex = /(?:total|due|amount|balance|pay)[\s:;=$]*([\d,]+\.\d{2})/gi;
+                    let match;
+                    let parsedCost = 0;
+
+                    while ((match = moneyRegex.exec(text)) !== null) {
+                        let currentVal = parseFloat(match[1].replace(/,/g, ''));
+                        if (currentVal > parsedCost) parsedCost = currentVal;
+                    }
+
+                    // Strict backup option looking for raw currency totals if keywords miss
+                    if (parsedCost === 0) {
+                        const genericRegex = /\$?([\d,]+\.\d{2})/g;
+                        while ((match = genericRegex.exec(text)) !== null) {
+                            let currentVal = parseFloat(match[1].replace(/,/g, ''));
+                            if (currentVal > parsedCost && currentVal < 1000) parsedCost = currentVal;
+                        }
+                    }
+
+                    status.classList.add('hidden');
+
+                    // Prompt fallback if receipt print quality was too poor to read text 
+                    if (parsedCost === 0) {
+                        const manualVal = prompt("Could not auto-detect text. Enter receipt total manually:", "0.00");
+                        parsedCost = parseFloat(manualVal) || 0;
+                    }
+
+                    if (parsedCost > 0) {
+                        const targetCard = cards[selector.value];
+                        if (confirm(`Deduct $${parsedCost.toFixed(2)} from "${targetCard.name}"?`)) {
+                            targetCard.amt = Math.max(0, targetCard.amt - parsedCost);
+                            showCards();
+                            alert("Balance updated successfully!");
+                        }
+                    }
+                } catch (err) {
+                    status.classList.add('hidden');
+                    alert("OCR Engine Error: Failed to parse photo layer.");
+                }
+                input.value = ''; // Flush input file stream
+            };
+
+            reader.readAsDataURL(file);
         }
     </script>
 </body>
